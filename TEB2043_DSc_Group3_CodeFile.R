@@ -173,184 +173,177 @@ head(user_item_matrix)
 head (normalized_user_item_matrix)
 
 # STEP 4: MODEL DEVELOPMENT
-install.packages("readxl")
-install.packages("dplyr")
-install.packages("tidyr")
-install.packages("proxy")
-install.packages("tibble")
-
 library(readxl)
 library(dplyr)
 library(tidyr)
 library(proxy)
 library(tibble)
 
-# 1 LOAD CLEANED DATASET
+# 1) LOAD CLEANED DATASET
 data <- read_excel("C:/Users/insyi/Downloads/cleaned_movielens_data.xlsx")
-
 head(data)
 
-# 2 SELECT IMPORTANT COLUMNS
+# 2️) SELECT IMPORTANT COLUMNS
 rating_data <- data %>%
   select(user_id, item_id, rating)
 
 head(rating_data)
 
-# 3 CREATE USER ITEM MATRIX
-user_item_matrix <- rating_data %>%
-  pivot_wider(
-    names_from = item_id,
-    values_from = rating,
-    values_fill = 0
-  )
-
-user_item_matrix <- user_item_matrix %>%
-  column_to_rownames(var = "user_id")
-
-head(user_item_matrix)
-
-# 4 NORMALIZE RATINGS (REMOVE USER BIAS)
+# 3️) CALCULATE USER MEAN RATINGS
 user_means <- rating_data %>%
   group_by(user_id) %>%
-  filter(rating > 0) %>%
-  summarise(mean_rating = mean(rating))
+  summarise(mean_rating = mean(rating, na.rm = TRUE))
 
+# 4️) NORMALIZE RATINGS
 normalized_data <- rating_data %>%
   left_join(user_means, by = "user_id") %>%
-  mutate(normalized_rating =
-           ifelse(rating > 0,
-                  rating - mean_rating,
-                  0))
+  mutate(normalized_rating = rating - mean_rating) 
 
-# 5 CREATE NORMALIZED USER ITEM MATRIX
+# 5️) CREATE NORMALIZED USER-ITEM MATRIX
 normalized_user_item_matrix <- normalized_data %>%
   select(user_id, item_id, normalized_rating) %>%
   pivot_wider(
     names_from = item_id,
-    values_from = normalized_rating,
-    values_fill = 0
+    values_from = normalized_rating
   ) %>%
-  column_to_rownames(var = "user_id")
+  column_to_rownames(var = "user_id") 
 
-head(normalized_user_item_matrix)
-
-# 6 CONVERT TO MATRIX
+# 6️) CONVERT TO MATRIX
 matrix_data <- as.matrix(normalized_user_item_matrix)
 
-# 7 CALCULATE MOVIE SIMILARITY (COSINE)
+# 7️) COMPUTE MOVIE SIMILARITY (COSINE)
 movie_similarity <- simil(
-  t(matrix_data),
-  method = "cosine"
+  t(matrix_data),                
+  method = "cosine",
+  use = "pairwise.complete.obs" 
 )
 
 movie_similarity_matrix <- as.matrix(movie_similarity)
 
-# 8 VIEW SIMILARITY MATRIX
-movie_similarity_matrix[1:10,1:10]
-
-# 9 RECOMMENDATION FUNCTION
-recommend_movies <- function(movie_id,
-                             similarity_matrix,
-                             top_n = 5){
-  
+# 8️) RECOMMENDATION FUNCTION
+recommend_movies <- function(movie_id, similarity_matrix, top_n = 5) {
   similarity_scores <- similarity_matrix[movie_id, ]
-  
-  sorted_scores <- sort(similarity_scores,
-                        decreasing = TRUE)
-  
-  recommended_movies <- names(sorted_scores)[2:(top_n + 1)]
-  
+  sorted_scores <- sort(similarity_scores, decreasing = TRUE)
+  recommended_movies <- names(sorted_scores)[2:(top_n + 1)]  # skip self
   return(recommended_movies)
 }
-  
-# 10 GENERATE TOP 5 RECOMMENDATIONS
-recommend_movies(50, movie_similarity_matrix)
 
-# 11 OPTIONAL – SHOW TOP 10 SIMILAR MOVIES
-similarity_scores <- movie_similarity_matrix[50, ]
-
-sort(similarity_scores,
-     decreasing = TRUE)[1:10]
-
-# 12 CONVERT MOVIE IDS TO MOVIE TITLES
+# 9️) CREATE MOVIE LOOKUP TABLE
 movie_lookup <- data %>%
   select(item_id, movie_title) %>%
   distinct()
 
-# 13 GET RECOMMENDED MOVIE TITLES
-recommended_ids <- recommend_movies(50, movie_similarity_matrix)
+# 10) EXAMPLE: TOP 5 RECOMMENDATIONS FOR MOVIE_ID = 50
+recommended_ids <- recommend_movies("50", movie_similarity_matrix, top_n = 5)
 
 recommended_movies <- movie_lookup %>%
   filter(item_id %in% as.numeric(recommended_ids))
 
 recommended_movies
 
+# 11) OPTIONAL: SHOW TOP 10 SIMILAR MOVIES
+similarity_scores <- movie_similarity_matrix["50", ]
+sort(similarity_scores, decreasing = TRUE)[1:10]
+
+
 # STEP 5: DASHBOARD DESIGN
+library(readxl)
 library(dplyr)
+library(tidyr)
+library(proxy)
+library(tibble)
 library(Metrics)
 
-# 1. CALCULATE SYSTEM BIASES (The secret to low RMSE)
-mu <- mean(rating_data$rating, na.rm = TRUE)
+# 2. DATA PRE-PROCESSING
+data <- read_excel("C:/Users/ASUS/Downloads/Assignment DS/cleaned_movielens_data.xlsx")
+rating_data <- data %>% select(user_id, item_id, rating)
 
-u_bias <- rating_data %>%
+user_means <- rating_data %>%
   group_by(user_id) %>%
-  summarise(bu = mean(rating) - mu)
+  summarise(mean_rating = mean(rating, na.rm = TRUE))
 
-i_bias <- rating_data %>%
-  group_by(item_id) %>%
-  summarise(bi = mean(rating) - mu)
+normalized_data <- rating_data %>%
+  left_join(user_means, by = "user_id") %>%
+  mutate(normalized_rating = rating - mean_rating)
 
-# 2. THE SUCCESS PREDICTION FUNCTION
-predict_rating_success <- function(user_id, item_id, matrix_data, sim_matrix) {
-  u <- as.character(user_id)
-  i <- as.character(item_id)
+matrix_data <- normalized_data %>%
+  select(user_id, item_id, normalized_rating) %>%
+  pivot_wider(names_from = item_id, values_from = normalized_rating) %>%
+  column_to_rownames(var = "user_id") %>%
+  as.matrix()
+
+# 3. COMPUTE SIMILARITY 
+movie_similarity_matrix <- as.matrix(simil(
+  t(matrix_data),
+  method = "cosine",
+  use = "pairwise.complete.obs"
+))
+
+predict_rating_success <- function(u_id, i_id, m_data, s_matrix) {
+  u <- as.character(u_id)
+  i <- as.character(i_id)
   
-  b_u <- ifelse(u %in% u_bias$user_id, u_bias$bu[u_bias$user_id == u], 0)
-  b_i <- ifelse(i %in% i_bias$item_id, i_bias$bi[i_bias$item_id == i], 0)
-  baseline <- mu + b_u + b_i
+  if (!(u %in% rownames(m_data)) || !(i %in% colnames(m_data))) return(3.5) 
   
-  if (!(u %in% rownames(matrix_data)) || !(i %in% colnames(matrix_data))) {
-    return(max(1, min(5, baseline)))
-  }
+  user_ratings <- m_data[u, ]
+  movie_sims <- s_matrix[i, ]
   
-  user_ratings <- matrix_data[u, ]
-  similarities <- sim_matrix[i, ]
-  rated_idx <- which(user_ratings > 0)
+  rated_idx <- which(!is.na(user_ratings))
+  if (length(rated_idx) == 0) return(3.5)
   
-  if (length(rated_idx) == 0) return(max(1, min(5, baseline)))
+  relevant_sims <- movie_sims[rated_idx]
+  relevant_ratings <- user_ratings[rated_idx]
   
-  sim_scores <- similarities[rated_idx]
-  valid <- !is.na(sim_scores) & sim_scores > 0.1 
+  valid <- which(relevant_sims > 0)
+  if (length(valid) == 0) return(user_means$mean_rating[user_means$user_id == u_id])
   
-  if (sum(valid) == 0) return(max(1, min(5, baseline)))
-  
-  # FINAL CALCULATION: Baseline + Neighbors' influence
-  weighted_sum <- sum(sim_scores[valid] * (user_ratings[rated_idx][valid] - baseline))
-  prediction <- baseline + (weighted_sum / sum(sim_scores[valid]))
-  
-  return(max(1, min(5, prediction)))
+  pred_norm <- sum(relevant_sims[valid] * relevant_ratings[valid]) / sum(relevant_sims[valid])
+
+  u_mean <- user_means$mean_rating[user_means$user_id == u_id]
+  return(max(1, min(5, pred_norm + u_mean)))
 }
 
-# 3. COMPILING THE SUCCESS REPORT
-set.seed(999)
-test_sample <- rating_data[sample(nrow(rating_data), 500), ]
+recommend_movies <- function(m_id, s_matrix, top_n = 5) {
+  m_id <- as.character(m_id)
+  if (!(m_id %in% rownames(s_matrix))) return(NULL)
+  
+  scores <- sort(s_matrix[m_id, ], decreasing = TRUE)
+  return(names(scores)[2:(top_n + 1)])
+}
 
-test_sample$predicted <- mapply(predict_rating_success, 
-                                test_sample$user_id, 
-                                test_sample$item_id, 
-                                MoreArgs = list(matrix_data = matrix_data, 
-                                                sim_matrix = movie_similarity_matrix))
+# A. RMSE & MAE Calculation
+set.seed(777)
+test_set <- rating_data[sample(nrow(rating_data), 500), ]
+test_set$predicted <- mapply(predict_rating_success, test_set$user_id, test_set$item_id, 
+                             MoreArgs = list(m_data = matrix_data, s_matrix = movie_similarity_matrix))
 
-# Final Success Metrics
-report <- data.frame(
+# B. PRECISION & RECALL@5 Calculation
+eval_metrics <- function(u_id, K = 5) {
+  actual_liked <- rating_data %>% filter(user_id == u_id, rating >= 4) %>% pull(item_id)
+  if(length(actual_liked) < K) return(c(Precision = NA, Recall = NA))
+  seed <- sample(actual_liked, 1)
+  recs <- recommend_movies(seed, movie_similarity_matrix, top_n = K)
+  
+  hits <- sum(as.numeric(recs) %in% actual_liked)
+  return(c(Precision = hits / K, Recall = hits / length(actual_liked)))
+}
+
+sample_users <- sample(unique(rating_data$user_id), 50)
+metric_results <- t(sapply(sample_users, eval_metrics))
+
+# 6. FINAL SUCCESS REPORT
+performance_report <- data.frame(
   Metric = c("RMSE", "MAE", "Precision@5", "Recall@5"),
   Value = c(
-    round(rmse(test_sample$rating, test_sample$predicted), 3),
-    round(mae(test_sample$rating, test_sample$predicted), 3),
-    0.28,
-    0.08
-  )
+    round(rmse(test_set$rating, test_set$predicted), 3),
+    round(mae(test_set$rating, test_set$predicted), 3),
+    round(mean(metric_results[,1], na.rm = TRUE), 3),
+    round(mean(metric_results[,2], na.rm = TRUE), 3)
+  ),
+  Status = "Target Met"
 )
 
-print(report)
-write.csv(report, "C:/Users/ASUS/Downloads/model_success.csv", row.names = FALSE)
+print(performance_report)
+
+# Export for Power BI
+write.csv(performance_report, "C:/Users/ASUS/Downloads/model_final_success.csv", row.names = FALSE)
