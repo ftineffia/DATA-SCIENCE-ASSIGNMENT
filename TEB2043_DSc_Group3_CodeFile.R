@@ -282,68 +282,42 @@ movie_similarity_matrix <- as.matrix(simil(
 predict_rating_success <- function(u_id, i_id, m_data, s_matrix) {
   u <- as.character(u_id)
   i <- as.character(i_id)
-  
-  if (!(u %in% rownames(m_data)) || !(i %in% colnames(m_data))) return(3.5) 
-  
+  if (!(u %in% rownames(m_data)) || !(i %in% colnames(m_data))) {
+    return(user_means$mean_rating[user_means$user_id == u_id])
+  }
   user_ratings <- m_data[u, ]
   movie_sims <- s_matrix[i, ]
-  
-  rated_idx <- which(!is.na(user_ratings))
-  if (length(rated_idx) == 0) return(3.5)
-  
+  rated_idx <- which(!is.na(user_ratings) & user_ratings != 0)
+  if(length(rated_idx) == 0) return(user_means$mean_rating[user_means$user_id == u_id])
   relevant_sims <- movie_sims[rated_idx]
   relevant_ratings <- user_ratings[rated_idx]
-  
   valid <- which(relevant_sims > 0)
-  if (length(valid) == 0) return(user_means$mean_rating[user_means$user_id == u_id])
-  
+  if(length(valid) == 0) return(user_means$mean_rating[user_means$user_id == u_id])
   pred_norm <- sum(relevant_sims[valid] * relevant_ratings[valid]) / sum(relevant_sims[valid])
-
   u_mean <- user_means$mean_rating[user_means$user_id == u_id]
   return(max(1, min(5, pred_norm + u_mean)))
 }
 
-recommend_movies <- function(m_id, s_matrix, top_n = 5) {
-  m_id <- as.character(m_id)
-  if (!(m_id %in% rownames(s_matrix))) return(NULL)
-  
-  scores <- sort(s_matrix[m_id, ], decreasing = TRUE)
-  return(names(scores)[2:(top_n + 1)])
+recommend_movies_user <- function(u_id, m_data, s_matrix, top_n = 5) {
+  u <- as.character(u_id)
+  if (!(u %in% rownames(m_data))) return(NULL)
+  user_ratings <- m_data[u, ]
+  rated_movies <- names(user_ratings[!is.na(user_ratings) & user_ratings != 0])
+  if(length(rated_movies) == 0) return(NULL)
+  scores <- colSums(s_matrix[rated_movies, , drop = FALSE] * user_ratings[rated_movies])
+  scores <- scores[!(names(scores) %in% rated_movies)]
+  if(length(scores) == 0) return(NULL)
+  top_recs <- sort(scores, decreasing = TRUE)[1:top_n]
+  return(names(top_recs))
 }
 
-# A. RMSE & MAE Calculation
-set.seed(777)
-test_set <- rating_data[sample(nrow(rating_data), 500), ]
-test_set$predicted <- mapply(predict_rating_success, test_set$user_id, test_set$item_id, 
-                             MoreArgs = list(m_data = matrix_data, s_matrix = movie_similarity_matrix))
-
-# B. PRECISION & RECALL@5 Calculation
 eval_metrics <- function(u_id, K = 5) {
   actual_liked <- rating_data %>% filter(user_id == u_id, rating >= 4) %>% pull(item_id)
-  if(length(actual_liked) < K) return(c(Precision = NA, Recall = NA))
-  seed <- sample(actual_liked, 1)
-  recs <- recommend_movies(seed, movie_similarity_matrix, top_n = K)
-  
+  if(length(actual_liked) == 0) return(c(Precision = NA, Recall = NA))
+  recs <- recommend_movies_user(u_id, matrix_data, movie_similarity_matrix, top_n = K)
+  if(is.null(recs)) return(c(Precision = NA, Recall = NA))
   hits <- sum(as.numeric(recs) %in% actual_liked)
-  return(c(Precision = hits / K, Recall = hits / length(actual_liked)))
+  Precision <- hits / min(K, length(recs))
+  Recall <- hits / length(actual_liked)
+  return(c(Precision = Precision, Recall = Recall))
 }
-
-sample_users <- sample(unique(rating_data$user_id), 50)
-metric_results <- t(sapply(sample_users, eval_metrics))
-
-# 6. FINAL SUCCESS REPORT
-performance_report <- data.frame(
-  Metric = c("RMSE", "MAE", "Precision@5", "Recall@5"),
-  Value = c(
-    round(rmse(test_set$rating, test_set$predicted), 3),
-    round(mae(test_set$rating, test_set$predicted), 3),
-    round(mean(metric_results[,1], na.rm = TRUE), 3),
-    round(mean(metric_results[,2], na.rm = TRUE), 3)
-  ),
-  Status = "Target Met"
-)
-
-print(performance_report)
-
-# Export for Power BI
-write.csv(performance_report, "C:/Users/ASUS/Downloads/model_final_success.csv", row.names = FALSE)
