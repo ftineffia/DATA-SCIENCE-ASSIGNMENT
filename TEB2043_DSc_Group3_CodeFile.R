@@ -365,5 +365,3 @@ performance_report <- data.frame(
 
 print(performance_report)
 write.csv(performance_report, "C:/Users/ASUS/Downloads/model_final_success.csv", row.names = FALSE)
-
-ni dia fix for the whole step 5
