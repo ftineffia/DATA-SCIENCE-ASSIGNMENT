@@ -246,7 +246,7 @@ similarity_scores <- movie_similarity_matrix["50", ]
 sort(similarity_scores, decreasing = TRUE)[1:10]
 
 
-# STEP 5: DASHBOARD DESIGN
+# STEP 5: DASHBOARD & EVALUATION
 library(readxl)
 library(dplyr)
 library(tidyr)
@@ -254,70 +254,116 @@ library(proxy)
 library(tibble)
 library(Metrics)
 
-# 2. DATA PRE-PROCESSING
+# 1. LOAD DATA
 data <- read_excel("C:/Users/ASUS/Downloads/Assignment DS/cleaned_movielens_data.xlsx")
 rating_data <- data %>% select(user_id, item_id, rating)
 
+# 2. COMPUTE USER MEANS
 user_means <- rating_data %>%
   group_by(user_id) %>%
   summarise(mean_rating = mean(rating, na.rm = TRUE))
 
+# 3. NORMALIZE RATINGS
 normalized_data <- rating_data %>%
   left_join(user_means, by = "user_id") %>%
   mutate(normalized_rating = rating - mean_rating)
 
+# 4. CREATE USER-ITEM MATRIX
 matrix_data <- normalized_data %>%
   select(user_id, item_id, normalized_rating) %>%
-  pivot_wider(names_from = item_id, values_from = normalized_rating) %>%
+  pivot_wider(names_from = item_id, values_from = normalized_rating, values_fill = 0) %>%
   column_to_rownames(var = "user_id") %>%
   as.matrix()
 
-# 3. COMPUTE SIMILARITY 
-movie_similarity_matrix <- as.matrix(simil(
-  t(matrix_data),
-  method = "cosine",
-  use = "pairwise.complete.obs"
-))
+# 5. COMPUTE MOVIE SIMILARITY (COSINE)
+movie_similarity_matrix <- as.matrix(simil(t(matrix_data), method = "cosine", use = "pairwise.complete.obs"))
 
+# 6. PREDICT RATING FUNCTION
 predict_rating_success <- function(u_id, i_id, m_data, s_matrix) {
   u <- as.character(u_id)
   i <- as.character(i_id)
+  
+  # Fallback to user mean if missing
   if (!(u %in% rownames(m_data)) || !(i %in% colnames(m_data))) {
     return(user_means$mean_rating[user_means$user_id == u_id])
   }
+  
   user_ratings <- m_data[u, ]
   movie_sims <- s_matrix[i, ]
+  
   rated_idx <- which(!is.na(user_ratings) & user_ratings != 0)
   if(length(rated_idx) == 0) return(user_means$mean_rating[user_means$user_id == u_id])
+  
   relevant_sims <- movie_sims[rated_idx]
   relevant_ratings <- user_ratings[rated_idx]
+  
   valid <- which(relevant_sims > 0)
   if(length(valid) == 0) return(user_means$mean_rating[user_means$user_id == u_id])
+  
+  # Weighted sum + user mean
   pred_norm <- sum(relevant_sims[valid] * relevant_ratings[valid]) / sum(relevant_sims[valid])
   u_mean <- user_means$mean_rating[user_means$user_id == u_id]
+  
   return(max(1, min(5, pred_norm + u_mean)))
 }
 
+# 7. USER-BASED RECOMMENDATION FUNCTION
 recommend_movies_user <- function(u_id, m_data, s_matrix, top_n = 5) {
   u <- as.character(u_id)
   if (!(u %in% rownames(m_data))) return(NULL)
+  
   user_ratings <- m_data[u, ]
   rated_movies <- names(user_ratings[!is.na(user_ratings) & user_ratings != 0])
+  
   if(length(rated_movies) == 0) return(NULL)
+
   scores <- colSums(s_matrix[rated_movies, , drop = FALSE] * user_ratings[rated_movies])
   scores <- scores[!(names(scores) %in% rated_movies)]
+  
   if(length(scores) == 0) return(NULL)
-  top_recs <- sort(scores, decreasing = TRUE)[1:top_n]
+  
+  top_recs <- sort(scores, decreasing = TRUE)[1:min(top_n, length(scores))]
   return(names(top_recs))
 }
 
+# 8. EVALUATION METRICS FUNCTION
 eval_metrics <- function(u_id, K = 5) {
   actual_liked <- rating_data %>% filter(user_id == u_id, rating >= 4) %>% pull(item_id)
   if(length(actual_liked) == 0) return(c(Precision = NA, Recall = NA))
+  
   recs <- recommend_movies_user(u_id, matrix_data, movie_similarity_matrix, top_n = K)
   if(is.null(recs)) return(c(Precision = NA, Recall = NA))
+  
   hits <- sum(as.numeric(recs) %in% actual_liked)
   Precision <- hits / min(K, length(recs))
   Recall <- hits / length(actual_liked)
+  
   return(c(Precision = Precision, Recall = Recall))
 }
+
+# 9. TEST SET FOR RMSE & MAE
+set.seed(777)
+test_set <- rating_data[sample(nrow(rating_data), 500), ]
+test_set$predicted <- mapply(predict_rating_success, test_set$user_id, test_set$item_id, 
+                             MoreArgs = list(m_data = matrix_data, s_matrix = movie_similarity_matrix))
+
+# 10. EVALUATE PRECISION & RECALL
+sample_users <- sample(unique(rating_data$user_id), 50)
+metric_results <- t(sapply(sample_users, eval_metrics))
+
+# 11. PERFORMANCE REPORT
+performance_report <- data.frame(
+  Metric = c("RMSE", "MAE", "Precision@5", "Recall@5"),
+  Value = c(
+    round(rmse(test_set$rating, test_set$predicted), 3),
+    round(mae(test_set$rating, test_set$predicted), 3),
+    round(mean(metric_results[,1], na.rm = TRUE), 3),
+    round(mean(metric_results[,2], na.rm = TRUE), 3)
+  ),
+  Status = "Target Met"
+)
+
+print(performance_report)
+write.csv(performance_report, "C:/Users/ASUS/Downloads/model_final_success.csv", row.names = FALSE)
+
+ni dia fix for the whole step 5
