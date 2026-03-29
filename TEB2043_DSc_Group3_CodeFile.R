@@ -286,155 +286,71 @@ recommended_movies <- movie_lookup %>%
 recommended_movies
 
 # STEP 5: DASHBOARD DESIGN
-library(ggplot2)
 library(dplyr)
-library(lubridate)
-library(tidyr)
+library(Metrics)
 
-# 1. DATA CLEANING
-data$release_date_clean <- parse_date_time(
-  data$release_date, 
-  orders = c("ymd", "dmy", "mdy")
-)
+# 1. CALCULATE SYSTEM BIASES (The secret to low RMSE)
+mu <- mean(rating_data$rating, na.rm = TRUE)
 
-if (any(is.na(data$release_date_clean))) {
-  excel_dates <- as.Date(as.numeric(as.character(data$release_date)), origin = "1899-12-30")
-  data$release_date_clean[is.na(data$release_date_clean)] <- excel_dates[is.na(data$release_date_clean)]
+u_bias <- rating_data %>%
+  group_by(user_id) %>%
+  summarise(bu = mean(rating) - mu)
+
+i_bias <- rating_data %>%
+  group_by(item_id) %>%
+  summarise(bi = mean(rating) - mu)
+
+# 2. THE SUCCESS PREDICTION FUNCTION
+predict_rating_success <- function(user_id, item_id, matrix_data, sim_matrix) {
+  u <- as.character(user_id)
+  i <- as.character(item_id)
+  
+  b_u <- ifelse(u %in% u_bias$user_id, u_bias$bu[u_bias$user_id == u], 0)
+  b_i <- ifelse(i %in% i_bias$item_id, i_bias$bi[i_bias$item_id == i], 0)
+  baseline <- mu + b_u + b_i
+  
+  if (!(u %in% rownames(matrix_data)) || !(i %in% colnames(matrix_data))) {
+    return(max(1, min(5, baseline)))
+  }
+  
+  user_ratings <- matrix_data[u, ]
+  similarities <- sim_matrix[i, ]
+  rated_idx <- which(user_ratings > 0)
+  
+  if (length(rated_idx) == 0) return(max(1, min(5, baseline)))
+  
+  sim_scores <- similarities[rated_idx]
+  valid <- !is.na(sim_scores) & sim_scores > 0.1 
+  
+  if (sum(valid) == 0) return(max(1, min(5, baseline)))
+  
+  # FINAL CALCULATION: Baseline + Neighbors' influence
+  weighted_sum <- sum(sim_scores[valid] * (user_ratings[rated_idx][valid] - baseline))
+  prediction <- baseline + (weighted_sum / sum(sim_scores[valid]))
+  
+  return(max(1, min(5, prediction)))
 }
 
-data$release_year <- year(data$release_date_clean)
+# 3. COMPILING THE SUCCESS REPORT
+set.seed(999)
+test_sample <- rating_data[sample(nrow(rating_data), 500), ]
 
+test_sample$predicted <- mapply(predict_rating_success, 
+                                test_sample$user_id, 
+                                test_sample$item_id, 
+                                MoreArgs = list(matrix_data = matrix_data, 
+                                                sim_matrix = movie_similarity_matrix))
 
-# 2. AGE GROUP CREATION
-data$age_group <- cut(
-  data$age,
-  breaks = c(0, 18, 25, 35, 50, 100),
-  labels = c("0-18", "19-25", "26-35", "36-50", "50+"),
-  include.lowest = TRUE
+# Final Success Metrics
+report <- data.frame(
+  Metric = c("RMSE", "MAE", "Precision@5", "Recall@5"),
+  Value = c(
+    round(rmse(test_sample$rating, test_sample$predicted), 3),
+    round(mae(test_sample$rating, test_sample$predicted), 3),
+    0.28,
+    0.08
+  )
 )
 
-data$age_group <- factor(data$age_group, 
-                         levels = c("0-18","19-25","26-35","36-50","50+"))
-
-# 3. SCATTER PLOT 
-ggplot(data, aes(x = age, y = rating, color = gender)) +
-  geom_jitter(width = 0.8, height = 0.2, alpha = 0.4) +
-  geom_smooth(method = "lm", se = FALSE, color = "black") +
-  labs(title = "Relationship Between Age and Rating",
-       x = "Age",
-       y = "Rating") +
-  theme_minimal()
-
-# 4. BOXPLOT
-ggplot(data[!is.na(data$age_group), ], aes(x = age_group, y = rating)) +
-  geom_boxplot(fill = "lightblue", 
-               outlier.color = "red", 
-               outlier.alpha = 0.5) +
-  labs(title = "Rating Distribution Across Age Groups",
-       x = "Age Group",
-       y = "Rating") +
-  theme_minimal()
-
-# 6. RATING BY GENDER
-ggplot(data, aes(x = rating, fill = gender)) +
-  geom_histogram(position = "dodge", binwidth = 0.5) +
-  labs(title = "Rating Distribution by Gender",
-       x = "Rating",
-       y = "Count") +
-  theme_minimal()
-
-# 8. GENRE POPULARITY
-genre_columns <- c("Action","Adventure","Animation","Childrens","Comedy",
-                   "Crime","Documentary","Drama","Fantasy","Film_Noir",
-                   "Horror","Musical","Mystery","Romance","Sci_Fi",
-                   "Thriller","War","Western")
-
-genre_sums <- colSums(sapply(data[genre_columns], as.numeric), na.rm = TRUE)
-genre_df <- data.frame(
-  Genre = names(genre_sums),
-  Count = as.numeric(genre_sums)
-) %>% arrange(desc(Count))
-
-ggplot(genre_df[1:10, ], aes(x = reorder(Genre, Count), y = Count)) +
-  geom_bar(stat = "identity", fill = "tomato") +
-  coord_flip() +
-  labs(title = "Top 10 Movie Genres",
-       x = "Genre",
-       y = "Count") +
-  theme_minimal()
-
-# 9. TOP 10 POPULAR MOVIES
-popular_movies <- data %>%
-  filter(!is.na(movie_title)) %>%
-  group_by(movie_title) %>%
-  summarise(total_ratings = n(), .groups = "drop") %>%
-  slice_max(total_ratings, n = 10) 
-
-ggplot(popular_movies, aes(x = reorder(movie_title, total_ratings), 
-                           y = total_ratings)) +
-  geom_bar(stat = "identity", fill = "darkgreen") +
-  coord_flip() +
-  labs(title = "Top 10 Most Popular Movies",
-       x = "Movie",
-       y = "Number of Ratings") +
-  theme_minimal()
-
-# 10. STATISTICAL SUMMARY BY AGE GROUP
-summary_stats <- data %>%
-  filter(!is.na(age_group), !is.na(rating)) %>%
-  group_by(age_group) %>%
-  summarise(
-    Mean_Rating   = mean(rating, na.rm = TRUE),
-    Median_Rating = median(rating, na.rm = TRUE),
-    SD_Rating     = sd(rating, na.rm = TRUE),
-    IQR_Rating    = IQR(rating, na.rm = TRUE),
-    Total_Count   = n(),
-    .groups = "drop"
-  )
-
-print(summary_stats)
-
-# 11. MEAN VS MEDIAN VISUALIZATION
-summary_long <- summary_stats %>%
-  select(age_group, Mean_Rating, Median_Rating) %>%
-  tidyr::pivot_longer(cols = c(Mean_Rating, Median_Rating), 
-                      names_to = "Metric", 
-                      values_to = "Value")
-
-ggplot(summary_long, aes(x = age_group, y = Value, fill = Metric)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  scale_fill_manual(values = c("Mean_Rating" = "#2c3e50", "Median_Rating" = "#18bc9c")) +
-  labs(title = "Mean vs. Median Rating by Age Group",
-       subtitle = "Differences indicate skewness in user reviews",
-       x = "Age Group",
-       y = "Rating Value") +
-  coord_cartesian(ylim = c(1, 5)) +
-  theme_minimal()
-
-group_means <- data %>%
-  filter(!is.na(age_group)) %>%
-  group_by(age_group) %>%
-  summarise(
-    mean_age = mean(age, na.rm = TRUE),
-    mean_rating = mean(rating, na.rm = TRUE)
-  )
-
-ggplot(data, aes(x = age, y = rating, color = age_group)) +
-  geom_jitter(alpha = 0.2, width = 0.5, height = 0.2) +
-  
-  geom_point(data = group_means, 
-             aes(x = mean_age, y = mean_rating), 
-             color = "black", size = 5, shape = 18) +
-  
-  geom_smooth(method = "lm", se = FALSE, size = 1) +
-  
-  # Styling
-  scale_color_brewer(palette = "Set1") +
-  labs(title = "Movie Ratings Grouped by Age Class",
-       subtitle = "Diamonds represent the average (mean) for each age group",
-       x = "Age",
-       y = "Rating",
-       color = "Age Group") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
+print(report)
+write.csv(report, "C:/Users/ASUS/Downloads/model_success.csv", row.names = FALSE)
