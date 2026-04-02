@@ -173,6 +173,68 @@ normalized_user_item_matrix <- normalized_data %>%
 head(user_item_matrix)
 head(normalized_user_item_matrix)
 
+if (!require("readxl")) install.packages("readxl")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("tidyr")) install.packages("tidyr")
+
+# 2. LOAD DATA
+path <- "C:/Users/ASUS/Downloads/Assignment DS/cleaned_movielens_data.xlsx"
+data <- read_excel(path)
+
+# 3. PREPARE DATA
+ml_data <- data %>%
+  select(user_id, item_id, movie_title, rating, age, gender, occupation) %>%
+  mutate(
+    user_id = as.factor(user_id),
+    gender = as.factor(gender),
+    occupation = as.factor(occupation),
+    rating = as.numeric(rating)
+  ) %>%
+  na.omit()
+
+# 4. TRAIN THE PREDICTION MODEL
+message("Training the model...")
+model_lm <- lm(rating ~ age + gender + occupation + item_id, data = ml_data)
+
+# 5. GENERATE TOP 10 RECOMMENDATIONS PER USER
+all_movies <- ml_data %>% select(item_id, movie_title) %>% distinct()
+unique_users <- ml_data %>% select(user_id, age, gender, occupation) %>% distinct()
+
+message("Starting predictions for ", nrow(unique_users), " users. This may take a moment...")
+
+recommendation_list <- list()
+
+for(i in 1:nrow(unique_users)) {
+  u_id <- unique_users$user_id[i]
+  u_age <- unique_users$age[i]
+  u_gen <- unique_users$gender[i]
+  u_occ <- unique_users$occupation[i]
+  
+  temp_df <- all_movies
+  temp_df$user_id <- u_id
+  temp_df$age <- u_age
+  temp_df$gender <- u_gen
+  temp_df$occupation <- u_occ
+  temp_df$pred_rating <- predict(model_lm, newdata = temp_df)
+  
+  top_10 <- temp_df %>%
+    arrange(desc(pred_rating)) %>%
+    head(10) %>%
+    select(user_id, movie_title, pred_rating)
+  
+  recommendation_list[[i]] <- top_10
+
+  if(i %% 50 == 0) cat("Processed", i, "users...\n")
+}
+
+# 6. COMBINE AND SAVE
+final_recommendations <- bind_rows(recommendation_list)
+
+print(head(final_recommendations, 20))
+
+write.csv(final_recommendations, "predicted_recommendations.csv", row.names = FALSE)
+message("Success! File saved as 'predicted_recommendations.csv'")
+
 
 # STEP 4: MODEL DEVELOPMENT
 library(proxy)
@@ -284,3 +346,98 @@ report <- data.frame(
 
 print(report)
 write.csv(report, "C:/Users/ASUS/Downloads/model_success.csv", row.names = FALSE)
+
+# STEP 6: MACHINE LEARNING MODEL
+library(dplyr)
+library(readxl)
+library(Metrics)
+
+# Load cleaned dataset
+data <- read_excel("C:/Users/MSI/Downloads/cleaned_movielens_data.xlsx")
+
+# PREPARE DATA
+ml_data <- data %>%
+  select(user_id, item_id, age, gender, occupation, rating, movie_title,
+         Action, Adventure, Animation, Childrens, Comedy, Crime, Documentary,
+         Drama, Fantasy, Film_Noir, Horror, Musical, Mystery, Romance,
+         Sci_Fi, Thriller, War, Western) %>%
+  mutate(
+    user_id = as.factor(user_id),
+    item_id = as.factor(item_id),
+    gender = as.factor(gender),
+    occupation = as.factor(occupation)
+  )
+
+# TRAIN TEST SPLIT
+set.seed(123)
+train_index <- sample(1:nrow(ml_data), 0.8 * nrow(ml_data))
+
+train_data <- ml_data[train_index, ]
+test_data <- ml_data[-train_index, ]
+
+# TRAIN MODEL
+model_lm <- lm(
+  rating ~ user_id + age + gender + occupation,
+  data = train_data
+)
+
+# PREDICT & EVALUATE
+predictions <- predict(model_lm, newdata = test_data)
+
+rmse_ml <- rmse(test_data$rating, predictions)
+mae_ml <- mae(test_data$rating, predictions)
+
+cat("ML Model RMSE:", rmse_ml, "\n")
+cat("ML Model MAE:", mae_ml, "\n")
+
+# RECOMMENDATION BY USER
+recommend_by_user <- function(input_user_id, model, data, top_n = 5) {
+  
+  user_profile <- data %>%
+    filter(user_id == input_user_id) %>%
+    select(user_id, age, gender, occupation) %>%
+    distinct()
+  
+  all_movies <- data %>%
+    select(item_id, movie_title) %>%
+    distinct()
+  
+  predict_data <- merge(user_profile, all_movies, by = NULL)
+  
+  predict_data$user_id <- as.factor(input_user_id)
+  predict_data$age <- user_profile$age[1]
+  predict_data$gender <- user_profile$gender[1]
+  predict_data$occupation <- user_profile$occupation[1]
+  
+  predict_data$predicted_rating <- predict(model, newdata = predict_data)
+  
+  top_recommendations <- predict_data %>%
+    arrange(desc(predicted_rating)) %>%
+    slice(1:top_n)
+  
+  return(top_recommendations %>% select(movie_title, predicted_rating))
+}
+
+# RECOMMENDATION BY GENRE
+recommend_by_genre <- function(input_genre, model, data, top_n = 5) {
+  
+  genre_movies <- data %>%
+    filter(.data[[input_genre]] == 1) %>%
+    select(movie_title, age, gender, occupation, user_id) %>%
+    distinct()
+  
+  genre_movies$user_id <- as.factor(genre_movies$user_id)
+  
+  genre_movies$predicted_rating <- predict(model, newdata = genre_movies)
+  
+  top_recommendations <- genre_movies %>%
+    arrange(desc(predicted_rating)) %>%
+    slice(1:top_n)
+  
+  return(top_recommendations %>% select(movie_title, predicted_rating))
+}
+
+# TEST
+
+recommend_by_user(10, model_lm, ml_data, 5)
+recommend_by_genre("Action", model_lm, ml_data, 5)
